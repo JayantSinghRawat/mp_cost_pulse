@@ -1,0 +1,16 @@
+🚀 QUICK START: Google Maps API Setup
+
+1. Get API Key:
+   - Visit: https://console.cloud.google.com/
+   - Enable "Places API"
+   - Create API Key
+
+2. Set API Key:
+   echo "GOOGLE_PLACES_API_KEY=your-key-here" > .env
+
+3. Restart & Refresh:
+   docker-compose restart backend
+   sleep 5
+   docker-compose exec backend python refresh_bhopal_places_data.py
+
+✅ Done! Your app now uses Google Maps data.

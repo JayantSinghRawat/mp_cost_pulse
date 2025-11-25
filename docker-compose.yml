@@ -1,0 +1,246 @@
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: mpcostpulse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-mpcostpulse}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mpcostpulse-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-mpcostpulse}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-mpcostpulse}
+      MAPBOX_ACCESS_TOKEN: ${MAPBOX_ACCESS_TOKEN:-}
+      ISOCRONE_API_KEY: ${ISOCRONE_API_KEY:-}
+      BIGBASKET_API_KEY: ${BIGBASKET_API_KEY:-}
+      BLINKIT_API_KEY: ${BLINKIT_API_KEY:-}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      ZOMATO_API_KEY: ${ZOMATO_API_KEY:-}
+      OPENWEATHER_API_KEY: ${OPENWEATHER_API_KEY:-}
+      AQICN_TOKEN: ${AQICN_TOKEN:-demo}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:5173","http://localhost"]}
+      SCRAPY_DELAY: ${SCRAPY_DELAY:-1.0}
+      USER_AGENT: ${USER_AGENT:-Mozilla/5.0}
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ml_models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "python -c 'from app.core.database import init_db; init_db()' &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4"
+    networks:
+      - mpcostpulse-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-frontend
+    environment:
+      VITE_API_BASE_URL: /api/v1
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - mpcostpulse-network
+    restart: unless-stopped
+
+  ml-worker:
+    build:
+      context: ./ml_worker
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-ml-worker
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-mpcostpulse}
+    volumes:
+      - ./backend:/app/backend:ro
+      - ml_models:/app/models
+    depends_on:
+      - postgres
+    networks:
+      - mpcostpulse-network
+    restart: unless-stopped
+    command: python train_cost_predictor.py
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - mpcostpulse-network
+    restart: unless-stopped
+
+  airflow-webserver:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-airflow-webserver
+    command: webserver
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-mpcostpulse}
+      - AIRFLOW__CORE__FERNET_KEY=''
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__API__AUTH_BACKEND=airflow.api.auth.backend.basic_auth
+      - AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - airflow-init
+    networks:
+      - mpcostpulse-network
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-airflow-scheduler
+    command: scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-mpcostpulse}
+      - AIRFLOW__CORE__FERNET_KEY=''
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    depends_on:
+      - postgres
+      - airflow-init
+    networks:
+      - mpcostpulse-network
+
+  airflow-init:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        function ver() {
+          printf "%04d%04d%04d%04d" $${1//./ }
+        }
+        airflow_version=$$(AIRFLOW__LOGGING__LOGGING_LEVEL=INFO && airflow version)
+        airflow_version_comparable=$$(ver $${airflow_version})
+        min_airflow_version=2.2.0
+        min_airflow_version_comparable=$$(ver $${min_airflow_version})
+        if (( airflow_version_comparable < min_airflow_version_comparable )); then
+          echo
+          echo -e "\033[1;31mERROR!!!: Too old Airflow version $${airflow_version}!\e[0m"
+          echo "The minimum Airflow version supported: $${min_airflow_version}. Only use this or higher!"
+          echo
+          exit 1
+        fi
+        if [[ -z "$${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+          echo "If you are on Linux, you SHOULD follow the instructions below to set "
+          echo "AIRFLOW_UID environment variable, otherwise files will be owned by root."
+          echo "For other operating systems you can get rid of the warning with manually created .env file:"
+          echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
+          echo
+        fi
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough memory available for Docker.\e[0m"
+          echo "At least 4GB of memory required. You have $$(numfmt --to iec $$((mem_available * one_meg)))"
+          echo
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUS available for Docker.\e[0m"
+          echo "At least 2 CPUs recommended. You have $${cpus_available}"
+          echo
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo
+          echo -e "\033[1;33mWARNING!!!: Not enough Disk Space available for Docker.\e[0m"
+          echo "At least 10 GBs recommended. You have $$(numfmt --to iec $$((disk_available * 1024 )))"
+          echo
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: You have not enough resources to run Airflow (see above)!\e[0m"
+          echo "Please follow the instructions to increase amount of resources available:"
+          echo "   https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#before-you-begin"
+          echo
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "$${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    environment:
+      - AIRFLOW_UID=50000
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-mpcostpulse}
+      - AIRFLOW__CORE__FERNET_KEY=''
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./airflow/logs:/sources/logs
+      - ./airflow/dags:/sources/dags
+      - ./airflow/plugins:/sources/plugins
+    user: "0:0"
+    depends_on:
+      - postgres
+    networks:
+      - mpcostpulse-network
+
+volumes:
+  postgres_data:
+  ml_models:
+
+networks:
+  mpcostpulse-network:
+    driver: bridge
+
