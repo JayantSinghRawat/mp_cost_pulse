@@ -1,0 +1,74 @@
+# Minimal stack: just Postgres + Backend + Frontend (no Nginx, Airflow, ML worker).
+# Use: docker-compose -f docker-compose.minimal.yml up -d --build
+# Then open: http://localhost:3000 (frontend), http://localhost:8000/docs (API).
+
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: mpcostpulse-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-mpcostpulse}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mpcostpulse-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-mpcostpulse}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:5173","http://localhost"]}
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ml_models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "python -c 'from app.core.database import init_db; init_db()' &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    networks:
+      - mpcostpulse-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mpcostpulse-frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - mpcostpulse-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  ml_models:
+
+networks:
+  mpcostpulse-network:
+    driver: bridge

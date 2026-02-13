@@ -1,0 +1,16 @@
+# Minimal deps; use versions with pre-built wheels to avoid building (pydantic-core, psycopg2).
+# If you still get "Failed building wheel", try: pip install --prefer-binary -r requirements-minimal.txt
+fastapi>=0.104,<1
+uvicorn[standard]>=0.24,<1
+sqlalchemy>=2.0,<3
+psycopg2-binary>=2.9.9
+geoalchemy2>=0.14
+pydantic>=2.10,<3
+pydantic-settings>=2.1
+pydantic[email]>=2.10,<3
+python-dotenv>=1.0
+requests>=2.31
+beautifulsoup4>=4.12
+python-multipart>=0.0.6
+python-jose[cryptography]>=3.3
+passlib[bcrypt]>=1.7

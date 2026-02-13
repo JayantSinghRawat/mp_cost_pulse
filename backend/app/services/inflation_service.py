@@ -4,7 +4,6 @@ from typing import List, Optional
 from datetime import date, datetime
 from app.models.inflation import InflationData
 import requests
-import pandas as pd
 
 class InflationService:
     @staticmethod
