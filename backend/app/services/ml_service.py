@@ -2,16 +2,20 @@ from sqlalchemy.orm import Session
 from typing import Dict, List, Optional
 from pathlib import Path
 import logging
-from app.ml.cost_predictor import CostPredictor
-from app.ml.rent_classifier import RentClassifier
 from app.models.ml_models import MLModelVersion, Prediction
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+# Prefer local models dir when not in Docker
+def _models_dir() -> Path:
+    d = Path(__file__).resolve().parent.parent.parent / "models"
+    docker_d = Path("/app/models")
+    return docker_d if docker_d.exists() else d
+
 class MLService:
     def __init__(self):
-        self.models_dir = Path("/app/models")
+        self.models_dir = _models_dir()
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.cost_predictor = None
         self.rent_classifier = None
@@ -24,6 +28,7 @@ class MLService:
         if self._cost_predictor_loaded:
             return
         try:
+            from app.ml.cost_predictor import CostPredictor
             cost_model_path = self.models_dir / "cost_predictor" / "latest.pkl"
             if cost_model_path.exists():
                 self.cost_predictor = CostPredictor(str(cost_model_path))
@@ -42,6 +47,7 @@ class MLService:
         if self._rent_classifier_loaded:
             return
         try:
+            from app.ml.rent_classifier import RentClassifier
             rent_model_path = self.models_dir / "rent_classifier" / "latest"
             if rent_model_path.exists():
                 self.rent_classifier = RentClassifier(str(rent_model_path))

@@ -93,7 +93,7 @@ class RentService:
     @staticmethod
     def create_listing(db: Session, listing: RentListingCreate) -> RentListing:
         """Create a new rent listing"""
-        db_listing = RentListing(**listing.dict())
+        db_listing = RentListing(**listing.model_dump())
         db.add(db_listing)
         db.commit()
         db.refresh(db_listing)
